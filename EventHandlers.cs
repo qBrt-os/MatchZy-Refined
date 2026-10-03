@@ -100,6 +100,7 @@ public partial class MatchZy
             }
             playerData.Remove(userId);
             infernoStartTimes.Remove(userId);
+            pracUsedBots.Remove(userId);
 
             if (matchzyTeam1.coach.Contains(player))
             {
@@ -114,6 +115,12 @@ public partial class MatchZy
                 player.Clan = "";
             }
             noFlashList.Remove(userId);
+            practiceSwitchNoDeath.Remove(userId);
+            if (playerTimers.TryGetValue(userId, out var practiceTimer))
+            {
+                practiceTimer.KillTimer();
+                playerTimers.Remove(userId);
+            }
             lastGrenadesData.Remove(userId);
             nadeSpecificLastGrenadeData.Remove(userId);
             savedPlayerLocationData.Remove(userId);
@@ -122,6 +129,8 @@ public partial class MatchZy
             humanNextRegenerationTimes.Remove(userId);
             lastRethrowCommandTime.Remove(userId);
             lastGlobalRethrowCommandTime.Remove(userId);
+
+            HandleVetoCaptainLeft(userId);
 
             return HookResult.Continue;
         }
@@ -163,6 +172,7 @@ public partial class MatchZy
     {
         try
         {
+            StartPendingDemoRecording();
             ResetPracticeRoundTimeout();
             RestoreTrackedPracticeBotsAfterRoundStart();
             AssignUniquePracticeHumanSpawnsAfterRoundStart();
@@ -239,69 +249,106 @@ public partial class MatchZy
             if (!isPractice || entity == null || entity.Entity == null) return;
             if (!Constants.ProjectileTypeMap.ContainsKey(entity.Entity.DesignerName)) return;
 
+            // Looked up again by index next frame: the entity may be freed by then, and a stale handle must not be read.
+            uint entityIndex = entity.Index;
+            string designerName = entity.Entity.DesignerName;
+            string nadeType = Constants.ProjectileTypeMap[designerName];
             Server.NextFrame(() => {
-                CBaseCSGrenadeProjectile projectile = new CBaseCSGrenadeProjectile(entity.Handle);
-
-                if (!projectile.IsValid ||
-                    !projectile.Thrower.IsValid ||
-                    projectile.Thrower.Value == null ||
-                    projectile.Thrower.Value.Controller.Value == null ||
-                    projectile.Globalname == "custom"
-                ) return;
-
-                CCSPlayerController player = new(projectile.Thrower.Value.Controller.Value.Handle);
-                if(!player.IsValid || player.PlayerPawn.Value == null || !player.PlayerPawn.IsValid) return;
-                int client = player.UserId!.Value;
-                
-                Vector position = new(projectile.AbsOrigin!.X, projectile.AbsOrigin.Y, projectile.AbsOrigin.Z);
-                QAngle angle = new(projectile.AbsRotation!.X, projectile.AbsRotation.Y, projectile.AbsRotation.Z);
-                Vector velocity = new(projectile.AbsVelocity.X, projectile.AbsVelocity.Y, projectile.AbsVelocity.Z);
-                QAngle angularVelocity = new(projectile.AngVelocity.X, projectile.AngVelocity.Y, projectile.AngVelocity.Z);
-                string nadeType = Constants.ProjectileTypeMap[entity.Entity.DesignerName];
-
-                if (!lastGrenadesData.ContainsKey(client)) {
-                    lastGrenadesData[client] = new();
-                }
-
-                if (!nadeSpecificLastGrenadeData.ContainsKey(client))
+                try
                 {
-                    nadeSpecificLastGrenadeData[client] = new(){};
+                    var projectile = Utilities.GetEntityFromIndex<CBaseCSGrenadeProjectile>((int)entityIndex);
+                    if (projectile == null || !projectile.IsValid || projectile.DesignerName != designerName) return;
+                    // Spawned by a rethrow: gets the smoke color and detonation time below, but is not recorded into the history.
+                    bool isRethrow = projectile.Globalname == "custom";
+                    if (!projectile.Thrower.IsValid || projectile.Thrower.Value == null || projectile.Thrower.Value.Controller.Value == null) return;
+
+                    CCSPlayerController player = new(projectile.Thrower.Value.Controller.Value.Handle);
+                    if (!player.IsValid || !player.UserId.HasValue || !player.PlayerPawn.IsValid || player.PlayerPawn.Value == null) return;
+                    var playerOrigin = player.PlayerPawn.Value.CBodyComponent?.SceneNode?.AbsOrigin;
+                    if (playerOrigin == null || projectile.AbsOrigin == null || projectile.AbsRotation == null)
+                    {
+                        Log($"[OnEntitySpawnedHandler] {nadeType} of {player.PlayerName} not recorded: position not available.");
+                        return;
+                    }
+                    int client = player.UserId.Value;
+                    uint projectileIndex = projectile.Index;
+
+                    Vector position = new(projectile.AbsOrigin.X, projectile.AbsOrigin.Y, projectile.AbsOrigin.Z);
+                    QAngle angle = new(projectile.AbsRotation.X, projectile.AbsRotation.Y, projectile.AbsRotation.Z);
+                    QAngle angularVelocity = new(projectile.AngVelocity.X, projectile.AngVelocity.Y, projectile.AngVelocity.Z);
+                    Vector playerPosition = new(playerOrigin.X, playerOrigin.Y, playerOrigin.Z);
+                    QAngle playerAngle = new(player.PlayerPawn.Value.EyeAngles.X, player.PlayerPawn.Value.EyeAngles.Y, player.PlayerPawn.Value.EyeAngles.Z);
+                    ushort itemIndex = projectile.ItemIndex;
+
+                    lastGrenadeThrownTime[(int)projectileIndex] = (DateTime.Now, client);
+                    if (smokeColorEnabled.Value && nadeType == "smoke")
+                    {
+                        CSmokeGrenadeProjectile smokeProjectile = new(projectile.Handle);
+                        smokeProjectile.SmokeColor.X = GetPlayerTeammateColor(player).R;
+                        smokeProjectile.SmokeColor.Y = GetPlayerTeammateColor(player).G;
+                        smokeProjectile.SmokeColor.Z = GetPlayerTeammateColor(player).B;
+                    }
+                    if (isRethrow) return;
+
+                    // The launch velocity is in InitialVelocity; AbsVelocity can still read ~0 one frame after spawn.
+                    Vector velocity = new(projectile.InitialVelocity.X, projectile.InitialVelocity.Y, projectile.InitialVelocity.Z);
+                    if (!IsMovingVelocity(velocity)) velocity = new(projectile.AbsVelocity.X, projectile.AbsVelocity.Y, projectile.AbsVelocity.Z);
+                    if (IsMovingVelocity(velocity))
+                    {
+                        RecordThrownGrenade(client, nadeType, position, angle, velocity, angularVelocity, playerPosition, playerAngle, itemIndex);
+                        return;
+                    }
+
+                    // Neither velocity is set yet: work it out from how far the projectile moves in the next frame.
+                    Server.NextFrame(() =>
+                    {
+                        var moved = Utilities.GetEntityFromIndex<CBaseCSGrenadeProjectile>((int)projectileIndex);
+                        if (moved == null || !moved.IsValid || moved.AbsOrigin == null)
+                        {
+                            Log($"[OnEntitySpawnedHandler] {nadeType} of {player.PlayerName} not recorded: projectile gone before its velocity was known.");
+                            return;
+                        }
+                        float tickRate = 1.0f / Server.TickInterval;
+                        Vector recovered = new((moved.AbsOrigin.X - position.X) * tickRate, (moved.AbsOrigin.Y - position.Y) * tickRate, (moved.AbsOrigin.Z - position.Z) * tickRate);
+                        if (!IsMovingVelocity(recovered))
+                        {
+                            Log($"[OnEntitySpawnedHandler] {nadeType} of {player.PlayerName} not recorded: no launch velocity.");
+                            return;
+                        }
+                        RecordThrownGrenade(client, nadeType, position, angle, recovered, angularVelocity, playerPosition, playerAngle, itemIndex);
+                    });
                 }
-
-                GrenadeThrownData lastGrenadeThrown = new(
-                    position, 
-                    angle, 
-                    velocity,
-                    angularVelocity,
-                    player.PlayerPawn.Value.CBodyComponent!.SceneNode!.AbsOrigin, 
-                    player.PlayerPawn.Value.EyeAngles,
-                    nadeType,
-                    DateTime.Now,
-                    projectile.ItemIndex
-                );
-
-                nadeSpecificLastGrenadeData[client][nadeType] = lastGrenadeThrown;
-                lastGrenadesData[client].Add(lastGrenadeThrown);
-
-                if (maxLastGrenadesSavedLimit != 0 && lastGrenadesData[client].Count > maxLastGrenadesSavedLimit)
+                catch (Exception e)
                 {
-                    lastGrenadesData[client].RemoveAt(0);
-                }
-
-                lastGrenadeThrownTime[(int)projectile.Index] = (DateTime.Now, client);
-                
-                if (smokeColorEnabled.Value && nadeType == "smoke")
-                {
-                    CSmokeGrenadeProjectile smokeProjectile = new(entity.Handle);
-                    smokeProjectile.SmokeColor.X = GetPlayerTeammateColor(player).R;
-                    smokeProjectile.SmokeColor.Y = GetPlayerTeammateColor(player).G;
-                    smokeProjectile.SmokeColor.Z = GetPlayerTeammateColor(player).B;
+                    Log($"[OnEntitySpawnedHandler] {nadeType} not recorded: {e.Message}");
                 }
             });
         }
         catch (Exception e)
         {
             Log($"[OnEntitySpawnedHandler FATAL] An error occurred: {e.Message}");
+        }
+    }
+
+    // A real throw is always faster than 50 u/s; slower means the velocity was read before the engine set it.
+    private static bool IsMovingVelocity(Vector velocity)
+    {
+        return velocity.X * velocity.X + velocity.Y * velocity.Y + velocity.Z * velocity.Z >= 2500f;
+    }
+
+    private void RecordThrownGrenade(int client, string nadeType, Vector position, QAngle angle, Vector velocity, QAngle angularVelocity, Vector playerPosition, QAngle playerAngle, ushort itemIndex)
+    {
+        GrenadeThrownData lastGrenadeThrown = new(position, angle, velocity, angularVelocity, playerPosition, playerAngle, nadeType, DateTime.Now, itemIndex);
+
+        if (!lastGrenadesData.ContainsKey(client)) lastGrenadesData[client] = new();
+        if (!nadeSpecificLastGrenadeData.ContainsKey(client)) nadeSpecificLastGrenadeData[client] = new();
+
+        nadeSpecificLastGrenadeData[client][nadeType] = lastGrenadeThrown;
+        lastGrenadesData[client].Add(lastGrenadeThrown);
+
+        if (maxLastGrenadesSavedLimit != 0 && lastGrenadesData[client].Count > maxLastGrenadesSavedLimit)
+        {
+            lastGrenadesData[client].RemoveAt(0);
         }
     }
 
@@ -390,28 +437,35 @@ public partial class MatchZy
 
     public void OnEntityDeletedHandler(CEntityInstance entity)
     {
-        if (!isPractice || isDryRun) return;
-        if (entity == null || !entity.IsValid) return;
-        string designerName = entity.DesignerName;
-        if (designerName == "molotov_projectile" || designerName == "incendiary_projectile")
+        try
         {
-            if (lastGrenadeThrownTime.TryGetValue((int)entity.Index, out var data))
+            if (!isPractice || isDryRun) return;
+            if (entity == null || !entity.IsValid) return;
+            string designerName = entity.DesignerName;
+            if (designerName == "molotov_projectile" || designerName == "incendiary_projectile")
             {
-                var player = Utilities.GetPlayerFromUserid(data.Client);
-                if (player != null && IsPlayerValid(player))
+                if (lastGrenadeThrownTime.TryGetValue((int)entity.Index, out var data))
                 {
-                    Server.NextFrame(() =>
+                    var player = Utilities.GetPlayerFromUserid(data.Client);
+                    if (player != null && IsPlayerValid(player))
                     {
-                        if (!IsPlayerValid(player)) return;
-                        if (infernoStartTimes.TryGetValue(data.Client, out var infernoInfo) && (DateTime.Now - infernoInfo.Time).TotalSeconds < 0.2)
+                        Server.NextFrame(() =>
                         {
-                            string grenadeName = infernoInfo.IsIncendiary ? "incendiary" : "molotov";
-                            PrintToPlayerChat(player, Localizer[$"matchzy.pracc.{grenadeName}", player.PlayerName, $"{(DateTime.Now - data.Time).TotalSeconds:0.00}"]);
-                        }
-                    });
+                            if (!IsPlayerValid(player)) return;
+                            if (infernoStartTimes.TryGetValue(data.Client, out var infernoInfo) && (DateTime.Now - infernoInfo.Time).TotalSeconds < 0.2)
+                            {
+                                string grenadeName = infernoInfo.IsIncendiary ? "incendiary" : "molotov";
+                                PrintToPlayerChat(player, Localizer[$"matchzy.pracc.{grenadeName}", player.PlayerName, $"{(DateTime.Now - data.Time).TotalSeconds:0.00}"]);
+                            }
+                        });
+                    }
+                    lastGrenadeThrownTime.Remove((int)entity.Index);
                 }
-                lastGrenadeThrownTime.Remove((int)entity.Index);
             }
+        }
+        catch (Exception e)
+        {
+            Log($"[OnEntityDeletedHandler FATAL] An error occurred: {e.Message}");
         }
     }
 

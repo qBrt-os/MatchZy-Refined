@@ -40,18 +40,16 @@ public class GrenadeThrownData
         ItemIndex = itemIndex;
     }
 
-    public void LoadPosition(CCSPlayerController player)
+    // Returns false when the player was not moved (dead or not on T/CT).
+    public bool LoadPosition(CCSPlayerController player)
     {
-        PlayerTeleport.TeleportSafely(player, PlayerPosition, PlayerAngle);
+        return PlayerTeleport.TeleportSafely(player, PlayerPosition, PlayerAngle);
     }
 
     public void Throw(CCSPlayerController player, (int R, int G, int B)? smokeColor = null)
     {
-        CCSPlayerPawn? playerPawn = player.PlayerPawn.Value;
-        if (playerPawn == null || !playerPawn.IsValid)
-        {
-            return;
-        }
+        if (player == null || !player.IsValid || !player.PlayerPawn.IsValid || player.PlayerPawn.Value == null) return;
+        CCSPlayerPawn playerPawn = player.PlayerPawn.Value;
 
         if (!Constants.NadeProjectileMap.ContainsKey(Type))
         {

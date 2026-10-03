@@ -4,9 +4,9 @@
     "net10.0": {
       "CounterStrikeSharp.API": {
         "type": "Direct",
-        "requested": "[1.0.371, )",
-        "resolved": "1.0.371",
-        "contentHash": "K9zmwFh+YGkuZaz0d1AY6/Ec1I1NVrCdNlL4OKFQ0fWhHnCfL7uPAsvan3qR6aHLDkY7U4hjfwrHErY40NKQxQ==",
+        "requested": "[1.0.376, )",
+        "resolved": "1.0.376",
+        "contentHash": "TD0fSqxkNcJWFuR2TtHhYw72ONL7Rm+whsgdwlqW1UkMBdjdyNc0EtTDErf/DvgTEmwG7KNwOWZrXSjblFge9A==",
         "dependencies": {
           "FastGenericNew": "3.3.1",
           "McMaster.NETCore.Plugins": "1.4.0",
@@ -62,12 +62,12 @@
       },
       "SQLitePCLRaw.bundle_e_sqlite3": {
         "type": "Direct",
-        "requested": "[2.1.6, )",
-        "resolved": "2.1.6",
-        "contentHash": "BmAf6XWt4TqtowmiWe4/5rRot6GerAeklmOPfviOvwLoF5WwgxcJHAxZtySuyW9r9w+HLILnm8VfJFLCUJYW8A==",
+        "requested": "[2.1.11, )",
+        "resolved": "2.1.11",
+        "contentHash": "DC4nA7yWnf4UZdgJDF+9Mus4/cb0Y3Sfgi3gDnAoKNAIBwzkskNAbNbyu+u4atT0ruVlZNJfwZmwiEwE5oz9LQ==",
         "dependencies": {
-          "SQLitePCLRaw.lib.e_sqlite3": "2.1.6",
-          "SQLitePCLRaw.provider.e_sqlite3": "2.1.6"
+          "SQLitePCLRaw.lib.e_sqlite3": "2.1.11",
+          "SQLitePCLRaw.provider.e_sqlite3": "2.1.11"
         }
       },
       "FastGenericNew": {
@@ -432,20 +432,20 @@
       },
       "SQLitePCLRaw.core": {
         "type": "Transitive",
-        "resolved": "2.1.6",
-        "contentHash": "wO6v9GeMx9CUngAet8hbO7xdm+M42p1XeJq47ogyRoYSvNSp0NGLI+MgC0bhrMk9C17MTVFlLiN6ylyExLCc5w=="
+        "resolved": "2.1.11",
+        "contentHash": "PK0GLFkfhZzLQeR3PJf71FmhtHox+U3vcY6ZtswoMjrefkB9k6ErNJEnwXqc5KgXDSjige2XXrezqS39gkpQKA=="
       },
       "SQLitePCLRaw.lib.e_sqlite3": {
         "type": "Transitive",
-        "resolved": "2.1.6",
-        "contentHash": "2ObJJLkIUIxRpOUlZNGuD4rICpBnrBR5anjyfUFQep4hMOIeqW+XGQYzrNmHSVz5xSWZ3klSbh7sFR6UyDj68Q=="
+        "resolved": "2.1.11",
+        "contentHash": "Ev2ytaXiOlWZ4b3R67GZBsemTINslLD1DCJr2xiacpn4tbapu0Q4dHEzSvZSMnVWeE5nlObU3VZN2p81q3XOYQ=="
       },
       "SQLitePCLRaw.provider.e_sqlite3": {
         "type": "Transitive",
-        "resolved": "2.1.6",
-        "contentHash": "PQ2Oq3yepLY4P7ll145P3xtx2bX8xF4PzaKPRpw9jZlKvfe4LE/saAV82inND9usn1XRpmxXk7Lal3MTI+6CNg==",
+        "resolved": "2.1.11",
+        "contentHash": "Y/0ZkR+r0Cg3DQFuCl1RBnv/tmxpIZRU3HUvelPw6MVaKHwYYR8YNvgs0vuNuXCMvlyJ+Fh88U1D4tah1tt6qw==",
         "dependencies": {
-          "SQLitePCLRaw.core": "2.1.6"
+          "SQLitePCLRaw.core": "2.1.11"
         }
       },
       "System.Data.DataSetExtensions": {

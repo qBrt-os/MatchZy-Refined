@@ -5,3 +5,5 @@ MatchZy.sln
 /FORK_RELEASE_NOTES.md
 /server-bin/
 /CONTEXT.md
+tests/**/bin/
+tests/**/obj/

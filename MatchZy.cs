@@ -1,5 +1,8 @@
+using System.Runtime.InteropServices;
+using System.Reflection;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API.Core.Attributes;
@@ -14,7 +17,7 @@ namespace MatchZy
 
         public override string ModuleName => "MatchZy";
 
-        public override string ModuleVersion => "0.8.15-refined.1.1.12";
+        public override string ModuleVersion => "0.9.0-refined.1.1.13";
 
         public override string ModuleAuthor => "WD- (https://github.com/shobhit-pathak/)";
 
@@ -84,6 +87,48 @@ namespace MatchZy
         // SQLite/MySQL Database 
         private Database database = new();
     
+        private HashSet<string>? registeredCssCommands;
+
+        // Console commands this plugin registers (e.g. css_map), found once from the [ConsoleCommand] attributes.
+        private HashSet<string> GetRegisteredCssCommands()
+        {
+            if (registeredCssCommands != null) return registeredCssCommands;
+            registeredCssCommands = GetType()
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .SelectMany(method => method.GetCustomAttributes<ConsoleCommandAttribute>())
+                .Select(attribute => attribute.Command.ToLowerInvariant())
+                .ToHashSet();
+            return registeredCssCommands;
+        }
+
+        private static bool IsDotCssChatTrigger()
+        {
+            try
+            {
+                return CoreConfig.PublicChatTrigger.Contains(".") || CoreConfig.SilentChatTrigger.Contains(".");
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // Identifies the loaded build in the log: version, git commit it was built from, CounterStrikeSharp API version and OS.
+        private string GetBuildDescription()
+        {
+            try
+            {
+                string informational = typeof(MatchZy).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? ModuleVersion;
+                string commit = informational.Contains('+') ? informational[(informational.IndexOf('+') + 1)..] : "unknown";
+                if (commit.Length > 7) commit = commit[..7];
+                return $"[build {commit}, CounterStrikeSharp API {Api.GetVersion()}, {RuntimeInformation.OSDescription}]";
+            }
+            catch (Exception)
+            {
+                return "";
+            }
+        }
+
         public override void Load(bool hotReload) {
             
             LoadAdmins();
@@ -223,6 +268,7 @@ namespace MatchZy
             RegisterEventHandler<EventRoundFreezeEnd>(EventRoundFreezeEndHandler);
             RegisterEventHandler<EventPlayerGivenC4>(EventPlayerGivenC4);
             RegisterEventHandler<EventPlayerDeath>(EventPlayerDeathPreHandler, hookMode: HookMode.Pre);
+            RegisterEventHandler<EventPlayerDeath>(OnPracticeSwitchDeath);
             RegisterListener<Listeners.OnClientDisconnect>(CaptureDisconnectingPracticePawn);
             RegisterListener<Listeners.OnClientDisconnectPost>(RemoveDisconnectedPracticePawn);
             RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawnedHandler);
@@ -339,6 +385,9 @@ namespace MatchZy
 
             RegisterListener<Listeners.OnMapStart>(mapName => { 
                 CloseAllConfigurationMenus();
+                // A map change (also one made by another plugin) ends any GOTV recording, so it must not block the next one.
+                isDemoRecording = false;
+                CancelPendingDemoRecording();
                 AddTimer(1.0f, () => {
                     if (!isMatchSetup)
                     {
@@ -426,29 +475,45 @@ namespace MatchZy
                     player = playerData[playerUserId];
                 }
 
+                // Commands that take arguments match on the first word only (so ".mapx" is not ".map").
+                string commandName = messageCommand.ToLowerInvariant();
+
+                // When "." is also a CounterStrikeSharp chat trigger, CSSharp already runs css_<command> for this message;
+                // handling it here as well ran the command twice.
+                if (commandName.Length > 1 && commandName[0] == '.' && IsDotCssChatTrigger() && GetRegisteredCssCommands().Contains("css_" + commandName[1..]))
+                {
+                    return HookResult.Continue;
+                }
+
                 // Handling player commands
                 if (commandActions.ContainsKey(message)) {
                     commandActions[message](player, null);
                 }
 
-                if (message.StartsWith(".map"))
+                // .forceend / .endmatch with a winner (without one they are handled by commandActions above).
+                if ((messageCommand.Equals(".forceend", StringComparison.OrdinalIgnoreCase) || messageCommand.Equals(".endmatch", StringComparison.OrdinalIgnoreCase)) && messageCommandArg != "")
+                {
+                    HandleEndMatchCommand(player, messageCommandArg);
+                }
+
+                if (commandName == ".map")
                 {
                     HandleMapChangeCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".changemap", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".changemap")
                 {
                     HandlePlayerMapChangeCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".readyrequired"))
+                if (commandName == ".readyrequired")
                 {
                     HandleReadyRequiredCommand(player, messageCommandArg);
                 }
 
-                if (message.StartsWith(".restore"))
+                if (commandName == ".restore")
                 {
                     HandleRestoreCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".asay"))
+                if (commandName == ".asay")
                 {
                     if (IsPlayerAdmin(player, "css_asay", "@css/chat"))
                     {
@@ -467,122 +532,123 @@ namespace MatchZy
                         SendPlayerNotAdminMessage(player);
                     }
                 }
-                if (message.StartsWith(".savenade") || message.StartsWith(".sn"))
+                if (commandName == ".savenade" || commandName == ".sn")
                 {
                     HandleSaveNadeCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".delnade") || message.StartsWith(".dn"))
+                if (commandName == ".delnade" || commandName == ".dn")
                 {
                     HandleDeleteNadeCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".deletenade"))
+                if (commandName == ".deletenade")
                 {
                     HandleDeleteNadeCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".importnade") || message.StartsWith(".in"))
+                if (commandName == ".importnade" || commandName == ".in")
                 {
                     HandleImportNadeCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".listnades") || message.StartsWith(".lin"))
+                if (commandName == ".listnades" || commandName == ".lin")
                 {
                     HandleListNadesCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".loadnade") || message.StartsWith(".ln"))
+                if (commandName == ".loadnade" || commandName == ".ln")
                 {
                     HandleLoadNadeCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".sbp", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".sbp")
                 {
                     HandleSaveBotPositionsCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".lbp", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".lbp")
                 {
                     HandleLoadBotPositionsCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".dbp", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".dbp")
                 {
                     HandleDeleteBotPositionsCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botspawn", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botspawn")
                 {
                     HandleSaveBotSpawnCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".delbotspawn", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".delbotspawn")
                 {
                     HandleDeleteBotSpawnCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".placebot", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".placebot")
                 {
                     HandlePlaceBotsCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".placenewbot", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".placenewbot")
                 {
                     HandlePlaceNewBotsCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".showbotspawn", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".showbotspawn")
                 {
                     HandleShowBotSpawnsCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botshoot", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botshoot")
                 {
                     HandleBotShootCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botjiggle", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botjiggle")
                 {
                     HandleBotJiggleCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botjigglerange", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botjigglerange")
                 {
                     HandleBotJiggleRangeCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botjigglerandom", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botjigglerandom")
                 {
                     HandleBotJiggleRandomCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botrespawn", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botrespawn")
                 {
                     HandleBotRespawnCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botlifereg", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botlifereg")
                 {
                     HandleBotLifeRegenerationCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".liferegon", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".liferegon")
                 {
                     HandleHumanLifeRegenerationCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".allliferegon", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".allliferegon")
                 {
                     HandleAllHumanLifeRegenerationCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".botreactiontime", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".botreactiontime")
                 {
                     HandleBotReactionTimeCommand(player, messageCommandArg);
                 }
-                if (messageCommand.Equals(".spawn", StringComparison.OrdinalIgnoreCase))
+                if (commandName == ".spawn")
                 {
                     HandleSpawnCommand(player, messageCommandArg, player.TeamNum, "spawn");
                 }
-                if (message.StartsWith(".ctspawn") || message.StartsWith(".cts"))
+                if (commandName == ".ctspawn" || commandName == ".cts")
                 {
                     HandleSpawnCommand(player, messageCommandArg, (byte)CsTeam.CounterTerrorist, "ctspawn");
                 }
-                if (message.StartsWith(".tspawn") || message.StartsWith(".ts"))
+                if (commandName == ".tspawn" || commandName == ".ts")
                 {
                     HandleSpawnCommand(player, messageCommandArg, (byte)CsTeam.Terrorist, "tspawn");
                 }
-                if (message.StartsWith(".team1"))
+                if (commandName == ".team1")
                 {
                     HandleTeamNameChangeCommand(player, messageCommandArg, 1);
                 }
-                if (message.StartsWith(".team2"))
+                if (commandName == ".team2")
                 {
                     HandleTeamNameChangeCommand(player, messageCommandArg, 2);
                 }
-                if (message.StartsWith(".rcon"))
+                if (commandName == ".rcon")
                 {
                     if (IsPlayerAdmin(player, "css_rcon", "@css/rcon"))
                     {
+                        Log($"[RCON] {player.PlayerName} ({player.SteamID}) executed: {MatchZySecurity.RedactConsoleCommand(messageCommandArg)}");
                         Server.ExecuteCommand(messageCommandArg);
                         ReplyToUserCommand(player, "Command sent successfully!");
                     }
@@ -591,31 +657,31 @@ namespace MatchZy
                         SendPlayerNotAdminMessage(player);
                     }
                 }
-                if (message.StartsWith(".coach"))
+                if (commandName == ".coach")
                 {
                     HandleCoachCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".ban"))
+                if (commandName == ".ban")
                 {
                     HandeMapBanCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".pick"))
+                if (commandName == ".pick")
                 {
                     HandeMapPickCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".back"))
+                if (commandName == ".back")
                 {
                     HandleBackCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".delay"))
+                if (commandName == ".delay")
                 {
                     HandleDelayCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".throwindex"))
+                if (commandName == ".throwindex")
                 {
                     HandleThrowIndexCommand(player, messageCommandArg);
                 }
-                if (message.StartsWith(".throwidx"))
+                if (commandName == ".throwidx")
                 {
                     HandleThrowIndexCommand(player, messageCommandArg);
                 }
@@ -651,7 +717,7 @@ namespace MatchZy
             RegisterEventHandler<EventInfernoStartburn>(EventInfernoStartburnHandler);
             RegisterEventHandler<EventDecoyStarted>(EventDecoyDetonateHandler);
 
-            Console.WriteLine($"[{ModuleName} {ModuleVersion} LOADED] MatchZy by WD- (https://github.com/shobhit-pathak/)");
+            Console.WriteLine($"[{ModuleName} {ModuleVersion} LOADED] MatchZy by WD- (https://github.com/shobhit-pathak/) {GetBuildDescription()}");
         }
 
         public override void Unload(bool hotReload)
